@@ -4,6 +4,6 @@ Examples being:
   
 <code>iron ore</code> or <code>raw trout,raw salmon</code>
     
-Does not support wear/equip items such as <code>staff of air</code> or <code>iron full helm</code>  
+Does not support non use/drop/examine/cancel option items such as <code>staff of air</code> or <code>iron full helm</code> or <code>lobster</code>
 
 Use at your own risk.
