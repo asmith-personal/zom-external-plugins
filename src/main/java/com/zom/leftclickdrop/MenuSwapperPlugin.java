@@ -27,6 +27,7 @@ package com.zom.leftclickdrop;
 
 import com.google.common.collect.ArrayListMultimap;
 import com.google.inject.Provides;
+import java.awt.event.KeyEvent;
 import java.util.List;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
@@ -34,6 +35,7 @@ import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.events.ClientTick;
+import net.runelite.api.events.FocusChanged;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.api.widgets.WidgetItem;
@@ -41,31 +43,47 @@ import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.game.ItemManager;
+import net.runelite.client.input.KeyListener;
+import net.runelite.client.input.KeyManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.antidrag.AntiDragConfig;
 import net.runelite.client.util.Text;
 
 @Slf4j
 @PluginDescriptor(
 	name = "Custom Left Click Drop"
 )
-public class MenuSwapperPlugin extends Plugin
+public class MenuSwapperPlugin extends Plugin implements KeyListener
 {
 	@Inject
 	private Client client;
 
 	@Inject
-	private MenuSwapperConfig config;
+	private MenuSwapperConfig menuSwapperConfig;
+
+	@Inject
+	private AntiDragConfig antiDragConfig;
+
+	@Inject
+	private String initialAntiDragSetting;
 
 	@Inject
 	private ItemManager itemManager;
+
+	@Inject
+	private KeyManager keyManager;
 
 	private final ArrayListMultimap<String, Integer> optionIndexes = ArrayListMultimap.create();
 	private List<String> itemList;
 	private static final int DEFAULT_DELAY = 5;
 
+	private boolean useAntiDragSettings;
+	private boolean currentlyOverRiding = false;
+
 	// [0] is always cancel and no target. [1 - 3] is the item.
 	private static final int NOT_CANCEL = 2;
+
 	@Subscribe
 	public void onClientTick(ClientTick clientTick)
 	{
@@ -100,7 +118,10 @@ public class MenuSwapperPlugin extends Plugin
 
 			if (itemList == null || itemList.size() == 0)
 			{
-				client.setInventoryDragDelay(DEFAULT_DELAY); // ensure default delay
+				if (!currentlyOverRiding)
+				{
+					client.setInventoryDragDelay(DEFAULT_DELAY); // ensure default delay
+				}
 				return;
 			}
 
@@ -110,9 +131,12 @@ public class MenuSwapperPlugin extends Plugin
 				{
 					if (!itemList.contains(getItemName(draggedItem.getId())))
 					{
-						// ensure default delay only if not currently dragging an item
-						// you would set default delay if you dragged an item over top of a non left click droppable item
-						client.setInventoryDragDelay(DEFAULT_DELAY);
+						if (!currentlyOverRiding)
+						{
+							// ensure default delay only if not currently dragging an item
+							// you would set default delay if you dragged an item over top of a non left click droppable item
+							client.setInventoryDragDelay(DEFAULT_DELAY);
+						}
 					}
 				}
 				return;
@@ -125,9 +149,17 @@ public class MenuSwapperPlugin extends Plugin
 			{
 				if (item.equals(target) && isGenericItem())
 				{
-					if (config.antiDragEnable())
+					if (menuSwapperConfig.antiDragEnable())
 					{
-						client.setInventoryDragDelay(config.antiDragDelay());
+						if (currentlyOverRiding)
+						{
+							client.setInventoryDragDelay(antiDragConfig.dragDelay());
+
+						}
+						else
+						{
+							client.setInventoryDragDelay(menuSwapperConfig.antiDragDelay());
+						}
 					}
 
 					// swap use with drop, only on items that are a generic item (not equipment, food, teleport tab, etc)
@@ -142,11 +174,21 @@ public class MenuSwapperPlugin extends Plugin
 			{
 				if (!itemList.contains(getItemName(draggedItem.getId())))
 				{
-					client.setInventoryDragDelay(DEFAULT_DELAY); // ensure default delay only if not currently dragging an item
+					if (currentlyOverRiding)
+					{
+						client.setInventoryDragDelay(antiDragConfig.dragDelay());
+
+					}
+					else
+					{
+						client.setInventoryDragDelay(DEFAULT_DELAY); // ensure default delay only if not currently dragging an item
+					}
 				}
 
 			}
-		} catch (Exception e) {
+		}
+		catch (Exception e)
+		{
 			client.setInventoryDragDelay(DEFAULT_DELAY); // ensure default delay
 		}
 	}
@@ -216,22 +258,117 @@ public class MenuSwapperPlugin extends Plugin
 		return -1;
 	}
 
+	@Override
+	public void keyTyped(KeyEvent e)
+	{
+
+	}
+
+	@Override
+	public void keyPressed(KeyEvent e)
+	{
+		if (e.getKeyCode() == KeyEvent.VK_SHIFT)
+		{
+			if (useAntiDragSettings)
+			{
+				currentlyOverRiding = true;
+				client.setInventoryDragDelay(antiDragConfig.dragDelay());
+				setBankDragDelay(antiDragConfig.dragDelay());
+			} else {
+				if (menuSwapperConfig.antiDragEnable())
+				{
+					client.setInventoryDragDelay(menuSwapperConfig.antiDragDelay());
+
+				}
+			}
+		}
+	}
+
+	@Override
+	public void keyReleased(KeyEvent e)
+	{
+		if (e.getKeyCode() == KeyEvent.VK_SHIFT)
+		{
+			if (useAntiDragSettings)
+			{
+				if (currentlyOverRiding) {
+					currentlyOverRiding = false;
+
+				}
+
+				if (menuSwapperConfig.antiDragEnable())
+				{
+					client.setInventoryDragDelay(menuSwapperConfig.antiDragDelay());
+				}
+			}
+			else
+			{
+				client.setInventoryDragDelay(DEFAULT_DELAY);
+			}
+			// In this case, 0 is the default for bank item widgets.
+			setBankDragDelay(0);
+		}
+	}
+
+	private void setBankDragDelay(int delay)
+	{
+		final Widget bankItemContainer = client.getWidget(WidgetInfo.BANK_ITEM_CONTAINER);
+		if (bankItemContainer != null)
+		{
+			Widget[] items = bankItemContainer.getDynamicChildren();
+			for (Widget item : items)
+			{
+				item.setDragDeadTime(delay);
+			}
+		}
+	}
+
+	@Subscribe
+	public void onFocusChanged(FocusChanged focusChanged)
+	{
+		if (!focusChanged.isFocused())
+		{
+			client.setInventoryDragDelay(DEFAULT_DELAY);
+			setBankDragDelay(0);
+		}
+	}
+
+
 	@Provides
 	MenuSwapperConfig provideConfig(ConfigManager configManager)
 	{
 		return configManager.getConfig(MenuSwapperConfig.class);
 	}
 
+	@Provides
+	AntiDragConfig getAntiDragConfig(ConfigManager configManager)
+	{
+		return configManager.getConfig(AntiDragConfig.class);
+	}
+
+	@Provides
+	String getInitialAntiDragSetting(ConfigManager configManager)
+	{
+		return configManager.getConfiguration("runelite", "antidragplugin");
+	}
+
 	@Override
 	protected void startUp()
 	{
-		itemList = Text.fromCSV(config.itemList().toLowerCase());
+		useAntiDragSettings = initialAntiDragSetting.equalsIgnoreCase("true");
+		keyManager.registerKeyListener(this);
+		itemList = Text.fromCSV(menuSwapperConfig.itemList().toLowerCase());
 	}
 
 	@Override
 	protected void shutDown()
 	{
 		itemList.clear();
+		if (!currentlyOverRiding) {
+			client.setInventoryDragDelay(DEFAULT_DELAY);
+		}
+		keyManager.unregisterKeyListener(this);
+
 	}
 
 	@Subscribe
@@ -239,7 +376,19 @@ public class MenuSwapperPlugin extends Plugin
 	{
 		if (event.getGroup().equals("leftclickdrop"))
 		{
-			itemList = Text.fromCSV(config.itemList().toLowerCase());
+			itemList = Text.fromCSV(menuSwapperConfig.itemList().toLowerCase());
+		}
+
+		if (event.getGroup().equalsIgnoreCase("runelite") && event.getKey().equalsIgnoreCase("antidragplugin"))
+		{
+			if (event.getNewValue().equals("true"))
+			{
+				useAntiDragSettings = true;
+			}
+			else
+			{
+				useAntiDragSettings = false;
+			}
 		}
 	}
 }
